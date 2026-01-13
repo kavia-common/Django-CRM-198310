@@ -1,0 +1,53 @@
+name: Backend CI (E2E financial activity command)
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Django-CRM-198310/backend
+
+    env:
+      DJANGO_SETTINGS_MODULE: crm.settings
+
+      # Use SQLite for deterministic CI runs.
+      DB_ENGINE: sqlite
+      SQLITE_NAME: db_ci.sqlite3
+
+      # Django test client uses host "testserver" for requests.
+      # Allow it so the management command can POST to /api/auth/login/ in-process.
+      ALLOWED_HOSTS: localhost,127.0.0.1,testserver
+
+      # Ensure tests are deterministic and non-interactive.
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          # pytest is typically present in CI, but install explicitly for determinism
+          python -m pip install pytest pytest-django
+
+      - name: Prepare SQLite schema (includes apps without migrations)
+        run: |
+          python manage.py migrate --run-syncdb --noinput -v 0
+
+      - name: Run focused regression tests (includes E2E management command)
+        run: |
+          pytest -q common/tests/test_multitenancy.py common/tests/test_e2e_financial_activity_check.py
