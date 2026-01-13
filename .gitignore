@@ -1,65 +1,63 @@
-# Python
-*.pyc
-*~
-*.swo
-*.swp
+
+# Python ignorables
+logs/
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Django
-db.sqlite3
-*.log
-media/
-media-images/
-cache/
-static/CACHE
-staticfiles/
-celerybeat-schedule
-local_settings.py
-.env
-server.log
-dump.rdb
-
-# Virtual Environment
-env/
-venv/
-.venv/
-ENV/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Testing
-.coverage
-.pytest_cache/
+pip-log.txt
+pip-delete-this-directory.txt
 htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+venv/
+.env
+.env.*
 
-# Documentation
-docs/build/
+# Ignore all directories containing pyvenv.cfg
+**/pyvenv.cfg
+**/*/pyvenv.cfg
 
-# Node.js / Frontend
-frontend/node_modules/
-frontend/.svelte-kit/
-frontend/build/
-frontend/.env
-frontend/.env.local
-frontend/package-lock.json
-frontend/pnpm-lock.yaml
-
-# Logs
-logs/
+# Node.js ignorables
+node_modules/
+npm-debug.log
+yarn-error.log
+.pnp/
+.pnp.js
+.env
+.env.test
+.cache/
+.next/
+.nuxt/
+.vuepress/dist
+.serverless/
+.fusebox/
+.dynamodb/
+.file_activity_report.json
+*.db
+core.*
+.core
 *.log
-
-# OS
-.DS_Store
-Thumbs.db
-
-openapi.json
-.mcp.json
-CLAUDE.md
-TODO.md
-.playwright-mcp
+post_process_status.lock
