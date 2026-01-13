@@ -27,10 +27,16 @@ To update sensitive customer financial/insurance data, an ADMIN-only endpoint is
 - `GET /api/accounts/{account_id}/financial/` (ADMIN only)
 - `PATCH /api/accounts/{account_id}/financial/` (ADMIN only; idempotent and PATCH-friendly)
 
-Notes:
-- Tenant isolation is enforced by scoping the account to `request.profile.org` (and can additionally be protected by PostgreSQL RLS if enabled).
-- Each successful/failed update attempt is logged to ActivityLog with:
-  - `action=UPDATE`, `module=customer_finance`, `record_id=<account_id>`, `status=success|failure`.
+Security hardening notes (endpoint-specific):
+- **Standardized errors**:
+  - `404 {"detail": "Not found."}` when the account does not exist or is outside tenant scope.
+  - `403 {"detail": "Forbidden."}` when the account exists but the requester is not ADMIN (including anonymous access).
+  - Error bodies are intentionally minimal to avoid leaking schema/PK/model details.
+- **Response redaction**:
+  - Sensitive token-like values (e.g., `policy_number`) are masked (only last 4 characters visible).
+  - Responses include `redacted: true` and optional `redaction` metadata so clients can display masked values appropriately.
+- **Activity logging**:
+  - Update attempts are logged best-effort to ActivityLog with `module=accounts.financial` and do not include raw sensitive values.
 
 ## Centralized Activity Logging (ActivityLog)
 

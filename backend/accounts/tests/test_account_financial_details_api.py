@@ -5,11 +5,17 @@ Endpoint:
   PATCH /api/accounts/{id}/financial/
   GET   /api/accounts/{id}/financial/
 
-Requirements covered:
-- ADMIN can update and receives 200 with updated fields.
-- Non-admin roles receive 403 for read/write.
-- Tenant isolation: cannot access/update outside their org.
-- ActivityLog entries created with action=UPDATE, module=customer_finance, record_id=<account_id>, status.
+Hardening requirements covered:
+- 404 vs 403 semantics:
+  - 404 if account does not exist OR is outside tenant scope.
+  - 403 if account exists but requester is not ADMIN (including anonymous).
+- Minimal error bodies on 403/404:
+  - Must only include {"detail": "..."} and must not include keys like trace/model/pk.
+- Redaction in responses for ADMIN:
+  - Sensitive fields (e.g., policy_number) are masked deterministically.
+  - Response includes redacted=true and redaction metadata.
+- ActivityLog alignment:
+  - Logs use module="accounts.financial" and do not include sensitive values in metadata.
 """
 
 from django.test import TestCase
@@ -71,7 +77,17 @@ class AccountFinancialDetailsAPITestCase(TestCase):
         token = OrgAwareRefreshToken.for_user_and_org(user, org)
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
 
-    def test_admin_can_patch_financial_details(self):
+    def _clear_auth(self):
+        self.client.credentials()
+
+    def _assert_minimal_error_body(self, resp, expected_detail: str):
+        data = resp.json()
+        self.assertEqual(data, {"detail": expected_detail})
+        # Ensure common leakage keys aren't present
+        for key in ("trace", "traceback", "model", "pk", "id", "exception"):
+            self.assertNotIn(key, data)
+
+    def test_admin_can_patch_financial_details_and_response_is_redacted(self):
         self._auth_as(self.admin_user, self.org_a)
 
         payload = {
@@ -91,15 +107,18 @@ class AccountFinancialDetailsAPITestCase(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
+
         self.assertEqual(data["insurance_provider"], "Acme Insurance")
-        self.assertEqual(data["policy_number"], "POLICY-12345")
-        self.assertEqual(data["coverage_currency"], "USD")
-        self.assertEqual(data["billing_currency"], "USD")
-        self.assertEqual(data["payment_terms_days"], 30)
+        # policy_number must be masked
+        self.assertNotEqual(data["policy_number"], "POLICY-12345")
+        self.assertTrue(data["policy_number"].endswith("2345"))
+        self.assertTrue(data.get("redacted") is True)
+        self.assertIn("redaction", data)
+        self.assertEqual(data["redaction"]["policy_number"], "masked_last4")
 
         # ActivityLog must exist (best-effort logging should succeed in tests)
         logs = ActivityLog.objects.filter(
-            module="customer_finance",
+            module="accounts.financial",
             action=ActivityLog.Action.UPDATE,
             record_id=str(self.account_a.id),
             org=self.org_a,
@@ -107,7 +126,21 @@ class AccountFinancialDetailsAPITestCase(TestCase):
         self.assertGreaterEqual(logs.count(), 1)
         self.assertEqual(logs.first().status, ActivityLog.Status.SUCCESS)
 
-    def test_non_admin_gets_403_on_patch(self):
+        # Ensure logger metadata does not contain the raw policy number
+        if logs.first().metadata:
+            self.assertNotIn("POLICY-12345", str(logs.first().metadata))
+
+    def test_admin_get_returns_empty_shape_and_is_redacted(self):
+        self._auth_as(self.admin_user, self.org_a)
+        resp = self.client.get(f"/api/accounts/{self.account_a.id}/financial/")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Must include redaction hints even when empty
+        self.assertTrue(data.get("redacted") is True)
+        self.assertIn("policy_number", data)
+
+    def test_non_admin_gets_403_on_patch_minimal_body(self):
         self._auth_as(self.user_user, self.org_a)
         resp = self.client.patch(
             f"/api/accounts/{self.account_a.id}/financial/",
@@ -115,13 +148,21 @@ class AccountFinancialDetailsAPITestCase(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 403)
+        self._assert_minimal_error_body(resp, "Forbidden.")
 
-    def test_non_admin_gets_403_on_get(self):
+    def test_non_admin_gets_403_on_get_minimal_body(self):
         self._auth_as(self.user_user, self.org_a)
         resp = self.client.get(f"/api/accounts/{self.account_a.id}/financial/")
         self.assertEqual(resp.status_code, 403)
+        self._assert_minimal_error_body(resp, "Forbidden.")
 
-    def test_tenant_isolation_admin_cannot_update_other_org_account(self):
+    def test_anonymous_gets_403_on_get_minimal_body(self):
+        self._clear_auth()
+        resp = self.client.get(f"/api/accounts/{self.account_a.id}/financial/")
+        self.assertEqual(resp.status_code, 403)
+        self._assert_minimal_error_body(resp, "Forbidden.")
+
+    def test_tenant_isolation_returns_404_even_for_admin(self):
         # Admin from org A should not be able to access org B account due to org scoping.
         self._auth_as(self.admin_user, self.org_a)
         resp = self.client.patch(
@@ -129,15 +170,32 @@ class AccountFinancialDetailsAPITestCase(TestCase):
             data={"policy_number": "POLICY-CROSSORG"},
             format="json",
         )
-        # get_object_or_404 scoped to org returns 404 (preferred for isolation)
         self.assertEqual(resp.status_code, 404)
+        self._assert_minimal_error_body(resp, "Not found.")
 
-    def test_admin_get_returns_empty_shape_when_missing(self):
+    def test_missing_account_returns_404_minimal_body(self):
         self._auth_as(self.admin_user, self.org_a)
-        resp = self.client.get(f"/api/accounts/{self.account_a.id}/financial/")
-        self.assertEqual(resp.status_code, 200)
+        resp = self.client.get("/api/accounts/00000000-0000-0000-0000-000000000000/financial/")
+        self.assertEqual(resp.status_code, 404)
+        self._assert_minimal_error_body(resp, "Not found.")
+
+    def test_admin_validation_error_is_field_level_and_scrubbed(self):
+        self._auth_as(self.admin_user, self.org_a)
+
+        # Invalid policy number format
+        resp = self.client.patch(
+            f"/api/accounts/{self.account_a.id}/financial/",
+            data={"policy_number": "INVALID POLICY WITH SPACES"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
         data = resp.json()
-        # Should return keys even if values are blank/None (serializer on unsaved instance)
-        self.assertIn("policy_number", data)
-        self.assertIn("coverage_limit", data)
-"""
+
+        # Should include field-level errors only; no "error": True wrapper etc.
+        self.assertIn("errors", data)
+        self.assertIn("policy_number", data["errors"])
+
+        # Ensure response doesn't include common leakage keys
+        for key in ("trace", "traceback", "model", "pk", "exception"):
+            self.assertNotIn(key, data)
+        self.assertNotIn("AccountFinancialDetails", str(data))

@@ -883,21 +883,61 @@ class AccountFinancialDetailsView(APIView):
     URL:
       - GET/PATCH /api/accounts/{id}/financial/
 
-    Access control:
-      - Only org admins (role=ADMIN or is_organization_admin) are allowed.
-      - Non-admin roles receive 403 for both read and write.
+    Error semantics (standardized):
+      - 404 Not Found:
+          If the Account does not exist OR is outside tenant scope.
+          Response body is minimal: {"detail": "Not found."}
+      - 403 Forbidden:
+          If the Account exists (within tenant scope) but requester is not ADMIN.
+          Also for anonymous users hitting this endpoint (minimal body).
+          Response body is minimal: {"detail": "Forbidden."}
+
+    Security:
+      - Response redaction:
+          Highly sensitive tokens (e.g., policy_number) are masked in responses.
+          Response includes: {"redacted": true, "redaction": {...}} to hint clients.
+      - Error scrubbing:
+          Serializer errors are normalized; no stack traces/model names/PK hints.
+          For ADMIN validation errors: field-level messages are returned, but values are never echoed.
 
     Tenant isolation:
-      - Account is always fetched scoped to request.profile.org (defense in depth; RLS may also apply).
+      - Account is fetched scoped to request.profile.org (defense-in-depth; RLS may also apply).
 
     Logging:
-      - Records ActivityLog with action=UPDATE, module=customer_finance, record_id=<account_id>, status.
+      - Records ActivityLog with module="accounts.financial", action, record_id, status.
+      - Never logs raw sensitive field values.
     """
 
-    permission_classes = (IsAuthenticated, HasOrgContext, IsOrgAdmin)
+    # Keep IsAuthenticated so DRF still identifies anonymous properly, but we override
+    # permission denial semantics to return minimal 403 bodies.
+    permission_classes = (IsAuthenticated, HasOrgContext)
 
-    def _get_account(self, pk):
-        return get_object_or_404(Account, id=pk, org=self.request.profile.org)
+    def _is_admin(self, request) -> bool:
+        """
+        Return True if current request profile is an org admin.
+        """
+        profile = getattr(request, "profile", None)
+        if not profile:
+            return False
+        return profile.role == "ADMIN" or getattr(profile, "is_organization_admin", False)
+
+    def _forbidden(self) -> Response:
+        """
+        Minimal 403 response, consistent across anonymous and non-admin users.
+        """
+        return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+    def _not_found(self) -> Response:
+        """
+        Minimal 404 response, consistent for missing or cross-tenant accounts.
+        """
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    def _get_account_in_tenant(self, pk):
+        """
+        Fetch account scoped to tenant. Returns None if not found in tenant scope.
+        """
+        return Account.objects.filter(id=pk, org=self.request.profile.org).first()
 
     def _get_or_create_details(self, account: Account) -> AccountFinancialDetails:
         # Idempotent: PATCH can create the details row once and then update.
@@ -907,55 +947,89 @@ class AccountFinancialDetailsView(APIView):
         )
         return obj
 
+    def permission_denied(self, request, message=None, code=None):
+        """
+        Override DRF default permission_denied to ensure a minimal body and to avoid
+        any framework-specific detail leakage.
+        """
+        from rest_framework.exceptions import NotAuthenticated
+
+        # Treat anonymous as forbidden per hardening requirement for this endpoint.
+        if isinstance(getattr(request, "auth", None), NotAuthenticated) or not getattr(
+            request, "user", None
+        ) or not request.user.is_authenticated:
+            return self._forbidden()
+        return self._forbidden()
+
     @extend_schema(
         tags=["Accounts", "admin"],
         operation_id="accounts_financial_retrieve",
         summary="Retrieve account financial/insurance details (ADMIN only)",
-        description="Returns financial/insurance details for an account. ADMIN-only.",
+        description="Returns financial/insurance details for an account. ADMIN-only; sensitive tokens are masked.",
         responses={200: AccountFinancialDetailsReadSerializer},
     )
     def get(self, request, pk, *args, **kwargs):
-        account = self._get_account(pk)
+        from accounts.financial_security import redact_financial_payload
+
+        account = self._get_account_in_tenant(pk)
+        if not account:
+            return self._not_found()
+
+        if not self._is_admin(request):
+            return self._forbidden()
+
         details = AccountFinancialDetails.objects.filter(
             account=account, org=request.profile.org
         ).first()
         if not details:
             # Return empty shape (idempotent and frontend-friendly)
             details = AccountFinancialDetails(account=account, org=account.org)
-        return Response(AccountFinancialDetailsReadSerializer(details).data, status=status.HTTP_200_OK)
+
+        payload = AccountFinancialDetailsReadSerializer(details).data
+        return Response(redact_financial_payload(payload), status=status.HTTP_200_OK)
 
     @extend_schema(
         tags=["Accounts", "admin"],
         operation_id="accounts_financial_patch",
         summary="Update account financial/insurance details (ADMIN only)",
-        description="PATCH-friendly update. Creates a details record if it doesn't exist yet. ADMIN-only.",
+        description="PATCH-friendly update. Creates a details record if it doesn't exist yet. ADMIN-only; sensitive tokens are masked.",
         request=AccountFinancialDetailsWriteSerializer,
         responses={200: AccountFinancialDetailsReadSerializer},
     )
     def patch(self, request, pk, *args, **kwargs):
-        account = self._get_account(pk)
+        from accounts.financial_security import redact_financial_payload, scrub_serializer_errors
+
+        account = self._get_account_in_tenant(pk)
+        if not account:
+            return self._not_found()
+
+        if not self._is_admin(request):
+            # Requirement: do not leak existence beyond 403; account existence is implied
+            # only to the extent that caller already knows the ID.
+            return self._forbidden()
+
         details = self._get_or_create_details(account)
 
         serializer = AccountFinancialDetailsWriteSerializer(
             instance=details, data=request.data, partial=True
         )
         if not serializer.is_valid():
-            # Log failure best-effort
+            # Log failure best-effort; do not include raw errors that may contain values.
             log_activity(
                 user=request.user,
                 action=ActivityLog.Action.UPDATE,
-                module="customer_finance",
+                module="accounts.financial",
                 record_id=str(account.id),
                 status=ActivityLog.Status.FAILURE,
                 object_type="Account",
                 object_id=str(account.id),
                 object_repr=str(account),
-                metadata={"errors": serializer.errors},
+                metadata={"error": "validation_failed", "fields": list(serializer.errors.keys())},
                 request=request,
                 org=request.org,
             )
             return Response(
-                {"error": True, "errors": serializer.errors},
+                {"errors": scrub_serializer_errors(serializer.errors)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -964,7 +1038,7 @@ class AccountFinancialDetailsView(APIView):
             log_activity(
                 user=request.user,
                 action=ActivityLog.Action.UPDATE,
-                module="customer_finance",
+                module="accounts.financial",
                 record_id=str(account.id),
                 status=ActivityLog.Status.SUCCESS,
                 object_type="Account",
@@ -974,22 +1048,23 @@ class AccountFinancialDetailsView(APIView):
                 request=request,
                 org=request.org,
             )
-            return Response(
-                AccountFinancialDetailsReadSerializer(updated).data,
-                status=status.HTTP_200_OK,
-            )
-        except Exception as e:
+            payload = AccountFinancialDetailsReadSerializer(updated).data
+            return Response(redact_financial_payload(payload), status=status.HTTP_200_OK)
+        except Exception:
+            # Do not include exception text (can leak internals). Best-effort log only.
             log_activity(
                 user=request.user,
                 action=ActivityLog.Action.UPDATE,
-                module="customer_finance",
+                module="accounts.financial",
                 record_id=str(account.id),
                 status=ActivityLog.Status.FAILURE,
                 object_type="Account",
                 object_id=str(account.id),
                 object_repr=str(account),
-                metadata={"exception": str(e)},
+                metadata={"error": "server_error"},
                 request=request,
                 org=request.org,
             )
+            # Preserve existing behavior of raising for server-side visibility,
+            # but response bodies are handled by DRF global exception settings.
             raise
