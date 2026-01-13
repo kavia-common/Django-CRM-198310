@@ -3,12 +3,16 @@ version: "3.9"
 services:
   db:
     image: postgres:16
+    # NOTE: This env file is intentionally separate from backend/.env:
+    # - Postgres expects POSTGRES_* variables.
+    # - Django expects DB* variables (DBNAME, DBUSER, DBPASSWORD, DBHOST, DBPORT).
     env_file:
       - ./db.env
     # volumes:
     #   - /home/db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$DBUSER -d $$DBNAME -h 127.0.0.1 -p $$DBPORT"]
+      # Use POSTGRES_* here because those are the variables provided to the db container.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB -h 127.0.0.1 -p 5432"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -30,7 +34,7 @@ services:
         APP_NAME: Django-CRM-198310
     image: micropyramid/django-crm:1
     env_file:
-      - ./db.env
+      - ./backend/.env
     ports:
       - "8001:8000"
     depends_on:
@@ -43,6 +47,8 @@ services:
       RUN_MIGRATIONS: "true"
       # In-container bind target
       HOST: "0.0.0.0"
+      # Ensure container-to-container DB host is the compose service name (not localhost).
+      DBHOST: "db"
     command: ["python", "/app/backend/manage.py", "runserver", "0.0.0.0:8000"]
     healthcheck:
       # Use existing Django template endpoint to avoid changing API contracts.
@@ -59,7 +65,7 @@ services:
         APP_NAME: Django-CRM-198310
     image: micropyramid/django-crm:1
     env_file:
-      - ./db.env
+      - ./backend/.env
     depends_on:
       db:
         condition: service_healthy
@@ -71,6 +77,8 @@ services:
     environment:
       # Celery should not run migrations.
       RUN_MIGRATIONS: "false"
+      # Ensure container-to-container DB host is the compose service name (not localhost).
+      DBHOST: "db"
     command: ["celery", "-A", "crm", "worker", "--loglevel=INFO"]
     healthcheck:
       # Minimal health signal: ensure the celery process exists in the container.
