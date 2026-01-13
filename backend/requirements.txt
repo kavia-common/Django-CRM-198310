@@ -1,18 +1,27 @@
-django==5.2.9
-celery==5.6.0
+# Core framework
+# NOTE: Django 5.2 is the current LTS line; prefer latest 5.2.x patch for stability.
+django==5.2.10
+
+# Async tasks / broker
+celery==5.6.2
+redis==7.1.0
+
+# Django/DRF ecosystem
 python-dotenv==1.2.1
 django-cors-headers==4.9.0
 djangorestframework==3.16.1
 djangorestframework-simplejwt==5.5.1
 drf-spectacular==0.29.0
-django-ses==4.4.0
+django-ses==4.6.0
+django_storages==1.14.6
+django-crum==0.7.9
+
+# DB / static / observability
 psycopg2-binary==2.9.11
 whitenoise==6.11.0
-sentry-sdk==2.47.0
-django_storages==1.14.6
+sentry-sdk==2.49.0
 
-django-crum==0.7.9
-redis==7.1.0
+# Misc
 pytz==2025.2
 requests==2.32.5
 faker==33.1.0
