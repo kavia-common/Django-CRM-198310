@@ -1,4 +1,43 @@
-# BottleCRM Backend - Django REST API
+# BottleCRM Backend
+
+## Centralized Activity Logging (ActivityLog)
+
+The backend includes a dedicated `activity` app that records centralized audit-style activity events:
+
+- Auth events:
+  - `LOGIN` and `LOGOUT` (best-effort via Django auth signals), capturing user id/email plus IP and user-agent when available.
+- CRUD events (best-effort via Django model signals):
+  - `CREATE`, `UPDATE`, `DELETE` for major modules:
+    - Leads, Accounts, Contacts, Opportunities, Cases, Tasks, Invoices
+
+### Where logs are stored
+- Database table: `activity_log`
+- Model: `activity.models.ActivityLog`
+- Django admin: **Activity Logs**
+
+### API (read-only, protected)
+- Endpoint: `GET /api/activity/activity-logs/`
+- Permissions: authenticated + org-admin (or superuser)
+
+Filters (query params):
+- `start`, `end` (ISO datetimes)
+- `actor` (user UUID)
+- `object_type` (e.g., `Lead`, `Account`)
+- `action` (`LOGIN|LOGOUT|CREATE|UPDATE|DELETE`)
+- `org` (org UUID; superuser only)
+- `limit` (default 100, max 500)
+
+### Purge old logs
+A management command is available:
+
+- Purge for a single org:
+  - `python manage.py purge_activity_logs --days 90 --org-id <ORG_UUID>`
+- Purge across all orgs (explicit opt-in):
+  - `python manage.py purge_activity_logs --days 90 --all-orgs`
+
+Notes:
+- Logging is non-blocking by design: failures to write a log entry will not break the primary request.
+- Tenant/org is taken from existing org context middleware (JWT/API key) or the model instance `org` field; no tenant checks are weakened. - Django REST API
 
 The backend for BottleCRM, a multi-tenant CRM platform built with Django REST Framework.
 

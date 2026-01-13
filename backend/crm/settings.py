@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     "django_ses",
     "drf_spectacular",
     "common",
+    "activity",
     "accounts",
     "cases",
     "contacts",
