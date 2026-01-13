@@ -65,7 +65,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # Enforce requested ordering: postgres -> web -> celery
+      web:
+        condition: service_healthy
     environment:
       # Celery should not run migrations.
       RUN_MIGRATIONS: "false"
     command: ["celery", "-A", "crm", "worker", "--loglevel=INFO"]
+    healthcheck:
+      # Minimal health signal: ensure the celery process exists in the container.
+      # (We avoid requiring extra celery ping configuration and broker auth here.)
+      test: ["CMD-SHELL", "ps aux | grep -q '[c]elery\\s\\+-A\\s\\+crm\\s\\+worker'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
