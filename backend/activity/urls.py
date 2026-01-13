@@ -1,9 +1,14 @@
-from django.urls import path
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
 
-from activity.views import ActivityLogListView
+from activity.views import ActivityLogAdminViewSet
 
 app_name = "activity"
 
+router = DefaultRouter()
+router.register(r"admin/activity-logs", ActivityLogAdminViewSet, basename="admin-activity-logs")
+
 urlpatterns = [
-    path("activity-logs/", ActivityLogListView.as_view(), name="activity_logs"),
+    # Admin APIs (under /api/admin/activity-logs/ via router prefix below)
+    path("", include(router.urls)),
 ]

@@ -68,9 +68,12 @@ def _resolve_org(request, instance) -> Any:
 # PUBLIC_INTERFACE
 def log_activity(
     *,
-    actor: Any | None,
+    user: Any | None,
     action: str,
-    object_type: str,
+    module: str,
+    record_id: str = "",
+    status: str = ActivityLog.Status.SUCCESS,
+    object_type: str = "",
     object_id: str = "",
     object_repr: str = "",
     metadata: dict[str, Any] | None = None,
@@ -81,19 +84,37 @@ def log_activity(
     PUBLIC_INTERFACE
     Create an ActivityLog entry.
 
+    Required fields are always attempted:
+      timestamp (auto), user, action, module, record_id, status
+
+    Backward compatibility:
+      legacy fields (actor/object_type/object_id) are populated when possible.
+
     This function is intentionally non-blocking: any exception will be caught and logged.
     """
     try:
         req = request or get_current_request()
         resolved_org = org or _resolve_org(req, None)
 
+        # Normalize module for consistency
+        module_norm = (module or "").strip().lower()[:32]
+
+        actor = user if getattr(user, "is_authenticated", False) else None
+
         ActivityLog.objects.create(
-            actor=actor if isinstance(actor, get_user_model()) or actor is None else actor,
-            org=resolved_org,
+            # required/canonical
+            user=actor,
             action=action,
-            object_type=object_type,
-            object_id=str(object_id or ""),
+            module=module_norm,
+            record_id=str(record_id or "")[:64],
+            status=status,
+            # legacy
+            actor=actor,
+            object_type=(object_type or module_norm or "")[:100],
+            object_id=str(object_id or record_id or "")[:64],
             object_repr=(object_repr or "")[:255],
+            # scope & context
+            org=resolved_org,
             metadata=metadata or {},
             ip_address=_get_client_ip(req),
             user_agent=(req.META.get("HTTP_USER_AGENT", "")[:500] if req else ""),
@@ -104,7 +125,14 @@ def log_activity(
 
 
 # PUBLIC_INTERFACE
-def log_model_event(*, instance: Any, action: str, request: Any | None = None) -> None:
+def log_model_event(
+    *,
+    instance: Any,
+    action: str,
+    module: str,
+    status: str = ActivityLog.Status.SUCCESS,
+    request: Any | None = None,
+) -> None:
     """
     PUBLIC_INTERFACE
     Convenience wrapper for CRUD model events (create/update/delete).
@@ -116,13 +144,23 @@ def log_model_event(*, instance: Any, action: str, request: Any | None = None) -
         actor = getattr(req, "user", None) if req else None
         resolved_org = _resolve_org(req, instance)
 
+        module_norm = (module or instance.__class__.__name__).strip().lower()[:32]
+        record_id = str(getattr(instance, "pk", "") or "")[:64]
+
         ActivityLog.objects.create(
-            actor=actor if getattr(actor, "is_authenticated", False) else None,
-            org=resolved_org,
+            # required/canonical
+            user=actor if getattr(actor, "is_authenticated", False) else None,
             action=action,
+            module=module_norm,
+            record_id=record_id,
+            status=status,
+            # legacy
+            actor=actor if getattr(actor, "is_authenticated", False) else None,
             object_type=instance.__class__.__name__,
-            object_id=str(getattr(instance, "pk", "") or ""),
+            object_id=record_id,
             object_repr=_safe_obj_repr(instance),
+            # scope & context
+            org=resolved_org,
             metadata={},
             ip_address=_get_client_ip(req),
             user_agent=(req.META.get("HTTP_USER_AGENT", "")[:500] if req else ""),

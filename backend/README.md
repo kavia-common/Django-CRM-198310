@@ -1,5 +1,25 @@
 # BottleCRM Backend
 
+## Activity Logging (centralized)
+
+The `activity` app provides centralized, best-effort activity logging. Each log entry includes the following **required** fields:
+
+- `timestamp` (auto)
+- `user` (nullable for system actions)
+- `action` (`LOGIN|LOGOUT|CREATE|UPDATE|DELETE`)
+- `module` (lowercase: `leads|accounts|contacts|opportunities|cases|tasks|invoices|auth`)
+- `record_id` (stringified PK)
+- `status` (`success|failure`)
+
+Logging is **non-blocking**; failures to write logs never change the main API behavior.
+
+### Admin API (read-only)
+
+Org admins can list/retrieve activity logs (tenant isolated) at:
+
+- `GET /api/admin/activity-logs/` (supports filters: `start`, `end`, `user`, `module`, `action`, `status`, `record_id`; paginated)
+- `GET /api/admin/activity-logs/{id}/`
+
 ## Centralized Activity Logging (ActivityLog)
 
 The backend includes a dedicated `activity` app that records centralized audit-style activity events:

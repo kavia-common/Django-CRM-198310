@@ -21,6 +21,7 @@ urlpatterns = [
         name="healthz",
     ),
     path("api/", include("common.app_urls", namespace="common_urls")),
+    path("api/", include("activity.urls", namespace="activity_urls")),
     # Public portal endpoints (no auth required)
     path("api/public/", include("invoices.public_urls", namespace="public_invoices")),
     path(
