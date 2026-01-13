@@ -20,6 +20,18 @@ Org admins can list/retrieve activity logs (tenant isolated) at:
 - `GET /api/admin/activity-logs/` (supports filters: `start`, `end`, `user`, `module`, `action`, `status`, `record_id`; paginated)
 - `GET /api/admin/activity-logs/{id}/`
 
+### Admin-only Customer Finance Endpoint
+
+To update sensitive customer financial/insurance data, an ADMIN-only endpoint is available under the Accounts module:
+
+- `GET /api/accounts/{account_id}/financial/` (ADMIN only)
+- `PATCH /api/accounts/{account_id}/financial/` (ADMIN only; idempotent and PATCH-friendly)
+
+Notes:
+- Tenant isolation is enforced by scoping the account to `request.profile.org` (and can additionally be protected by PostgreSQL RLS if enabled).
+- Each successful/failed update attempt is logged to ActivityLog with:
+  - `action=UPDATE`, `module=customer_finance`, `record_id=<account_id>`, `status=success|failure`.
+
 ## Centralized Activity Logging (ActivityLog)
 
 The backend includes a dedicated `activity` app that records centralized audit-style activity events:

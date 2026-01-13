@@ -17,6 +17,108 @@ from contacts.models import Contact
 # - Removed 'contact_values' property (unused)
 
 
+class AccountFinancialDetails(BaseModel):
+    """
+    Financial and insurance details for an Account.
+
+    This data is intended to be restricted to ADMIN users only and is stored in a
+    dedicated, org-scoped table to support tenant isolation (including optional RLS).
+    """
+
+    account = models.OneToOneField(
+        "accounts.Account",
+        on_delete=models.CASCADE,
+        related_name="financial_details",
+        help_text="Account/customer this financial record belongs to",
+    )
+
+    # Tenant isolation: store org explicitly for defense-in-depth and RLS support.
+    org = models.ForeignKey(
+        Org,
+        on_delete=models.CASCADE,
+        related_name="account_financial_details",
+        help_text="Organization/tenant scope",
+    )
+
+    # Insurance details
+    insurance_provider = models.CharField(
+        _("Insurance Provider"), max_length=255, blank=True, default=""
+    )
+    policy_number = models.CharField(
+        _("Policy Number"), max_length=64, blank=True, default=""
+    )
+    coverage_limit = models.DecimalField(
+        _("Coverage Limit"), max_digits=15, decimal_places=2, blank=True, null=True
+    )
+    coverage_currency = models.CharField(
+        _("Coverage Currency"),
+        max_length=3,
+        choices=CURRENCY_CODES,
+        blank=True,
+        null=True,
+        help_text="Currency code for coverage_limit",
+    )
+    policy_effective_date = models.DateField(_("Policy Effective Date"), blank=True, null=True)
+    policy_expiration_date = models.DateField(_("Policy Expiration Date"), blank=True, null=True)
+
+    # Financial details
+    billing_currency = models.CharField(
+        _("Billing Currency"),
+        max_length=3,
+        choices=CURRENCY_CODES,
+        blank=True,
+        null=True,
+        help_text="Preferred billing currency for this customer",
+    )
+    credit_limit = models.DecimalField(
+        _("Credit Limit"), max_digits=15, decimal_places=2, blank=True, null=True
+    )
+    payment_terms_days = models.PositiveIntegerField(
+        _("Payment Terms (days)"), blank=True, null=True
+    )
+
+    class Meta:
+        verbose_name = "Account Financial Details"
+        verbose_name_plural = "Account Financial Details"
+        db_table = "account_financial_details"
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=["org", "-created_at"]),
+            models.Index(fields=["account"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account"], name="unique_financial_details_per_account"
+            ),
+            models.CheckConstraint(
+                check=Q(coverage_limit__gte=0) | Q(coverage_limit__isnull=True),
+                name="account_finance_coverage_limit_non_negative",
+            ),
+            models.CheckConstraint(
+                check=Q(credit_limit__gte=0) | Q(credit_limit__isnull=True),
+                name="account_finance_credit_limit_non_negative",
+            ),
+        ]
+
+    def clean(self):
+        """
+        SECURITY: Ensure org matches the parent account's org to prevent cross-tenant linkage.
+        """
+        from django.core.exceptions import ValidationError
+
+        if self.account_id and self.org_id and self.account.org_id != self.org_id:
+            raise ValidationError(
+                {"org": "Financial details organization must match the account organization."}
+            )
+
+    def save(self, *args, **kwargs):
+        # Auto-populate org from account if not set.
+        if not self.org_id and self.account_id:
+            self.org_id = self.account.org_id
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
 class Account(AssignableMixin, BaseModel):
     """
     Account model for CRM - Streamlined for modern sales workflow

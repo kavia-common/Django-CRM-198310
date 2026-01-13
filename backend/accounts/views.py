@@ -10,15 +10,19 @@ from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from common.permissions import HasOrgContext
+from activity.logger import log_activity
+from activity.models import ActivityLog
+from common.permissions import HasOrgContext, IsOrgAdmin
 from rest_framework.views import APIView
 
 from accounts import swagger_params
-from accounts.models import Account
+from accounts.models import Account, AccountFinancialDetails
 from accounts.serializer import (
     AccountCommentEditSwaggerSerializer,
     AccountCreateSerializer,
     AccountDetailEditSwaggerSerializer,
+    AccountFinancialDetailsReadSerializer,
+    AccountFinancialDetailsWriteSerializer,
     AccountSerializer,
     AccountWriteSerializer,
     EmailSerializer,
@@ -870,3 +874,122 @@ class AccountCreateMailView(APIView):
             {"error": True, "errors": serializer.errors},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+
+class AccountFinancialDetailsView(APIView):
+    """
+    ADMIN-only endpoint to read/update customer financial/insurance details.
+
+    URL:
+      - GET/PATCH /api/accounts/{id}/financial/
+
+    Access control:
+      - Only org admins (role=ADMIN or is_organization_admin) are allowed.
+      - Non-admin roles receive 403 for both read and write.
+
+    Tenant isolation:
+      - Account is always fetched scoped to request.profile.org (defense in depth; RLS may also apply).
+
+    Logging:
+      - Records ActivityLog with action=UPDATE, module=customer_finance, record_id=<account_id>, status.
+    """
+
+    permission_classes = (IsAuthenticated, HasOrgContext, IsOrgAdmin)
+
+    def _get_account(self, pk):
+        return get_object_or_404(Account, id=pk, org=self.request.profile.org)
+
+    def _get_or_create_details(self, account: Account) -> AccountFinancialDetails:
+        # Idempotent: PATCH can create the details row once and then update.
+        obj, _created = AccountFinancialDetails.objects.get_or_create(
+            account=account,
+            defaults={"org": account.org},
+        )
+        return obj
+
+    @extend_schema(
+        tags=["Accounts", "admin"],
+        operation_id="accounts_financial_retrieve",
+        summary="Retrieve account financial/insurance details (ADMIN only)",
+        description="Returns financial/insurance details for an account. ADMIN-only.",
+        responses={200: AccountFinancialDetailsReadSerializer},
+    )
+    def get(self, request, pk, *args, **kwargs):
+        account = self._get_account(pk)
+        details = AccountFinancialDetails.objects.filter(
+            account=account, org=request.profile.org
+        ).first()
+        if not details:
+            # Return empty shape (idempotent and frontend-friendly)
+            details = AccountFinancialDetails(account=account, org=account.org)
+        return Response(AccountFinancialDetailsReadSerializer(details).data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        tags=["Accounts", "admin"],
+        operation_id="accounts_financial_patch",
+        summary="Update account financial/insurance details (ADMIN only)",
+        description="PATCH-friendly update. Creates a details record if it doesn't exist yet. ADMIN-only.",
+        request=AccountFinancialDetailsWriteSerializer,
+        responses={200: AccountFinancialDetailsReadSerializer},
+    )
+    def patch(self, request, pk, *args, **kwargs):
+        account = self._get_account(pk)
+        details = self._get_or_create_details(account)
+
+        serializer = AccountFinancialDetailsWriteSerializer(
+            instance=details, data=request.data, partial=True
+        )
+        if not serializer.is_valid():
+            # Log failure best-effort
+            log_activity(
+                user=request.user,
+                action=ActivityLog.Action.UPDATE,
+                module="customer_finance",
+                record_id=str(account.id),
+                status=ActivityLog.Status.FAILURE,
+                object_type="Account",
+                object_id=str(account.id),
+                object_repr=str(account),
+                metadata={"errors": serializer.errors},
+                request=request,
+                org=request.org,
+            )
+            return Response(
+                {"error": True, "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            updated = serializer.save(org=account.org, account=account)
+            log_activity(
+                user=request.user,
+                action=ActivityLog.Action.UPDATE,
+                module="customer_finance",
+                record_id=str(account.id),
+                status=ActivityLog.Status.SUCCESS,
+                object_type="Account",
+                object_id=str(account.id),
+                object_repr=str(account),
+                metadata={"updated_fields": list(serializer.validated_data.keys())},
+                request=request,
+                org=request.org,
+            )
+            return Response(
+                AccountFinancialDetailsReadSerializer(updated).data,
+                status=status.HTTP_200_OK,
+            )
+        except Exception as e:
+            log_activity(
+                user=request.user,
+                action=ActivityLog.Action.UPDATE,
+                module="customer_finance",
+                record_id=str(account.id),
+                status=ActivityLog.Status.FAILURE,
+                object_type="Account",
+                object_id=str(account.id),
+                object_repr=str(account),
+                metadata={"exception": str(e)},
+                request=request,
+                org=request.org,
+            )
+            raise

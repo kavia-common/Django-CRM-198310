@@ -1,7 +1,10 @@
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from accounts.models import Account, AccountEmail, AccountEmailLog
+import re
+from decimal import Decimal
+
+from accounts.models import Account, AccountEmail, AccountEmailLog, AccountFinancialDetails
 from common.serializer import (
     AttachmentsSerializer,
     OrganizationSerializer,
@@ -245,3 +248,108 @@ class EmailWriteSerializer(serializers.ModelSerializer):
             "scheduled_date_time",
             "message_body",
         )
+
+
+class AccountFinancialDetailsReadSerializer(serializers.ModelSerializer):
+    """Serializer for reading account financial/insurance details."""
+
+    class Meta:
+        model = AccountFinancialDetails
+        fields = [
+            "insurance_provider",
+            "policy_number",
+            "coverage_limit",
+            "coverage_currency",
+            "policy_effective_date",
+            "policy_expiration_date",
+            "billing_currency",
+            "credit_limit",
+            "payment_terms_days",
+        ]
+        read_only_fields = fields
+
+
+class AccountFinancialDetailsWriteSerializer(serializers.ModelSerializer):
+    """
+    Serializer for writing account financial/insurance details.
+
+    Validation goals:
+    - Policy number must be a reasonable token (letters/digits/-/_), max 64 chars.
+    - Monetary amounts must be non-negative with 2 decimals max (DecimalField enforces scale).
+    - Currency codes are constrained by choices.
+    - policy_expiration_date must not be earlier than policy_effective_date when both provided.
+    """
+
+    policy_number = serializers.CharField(
+        required=False, allow_blank=True, max_length=64
+    )
+
+    class Meta:
+        model = AccountFinancialDetails
+        fields = [
+            "insurance_provider",
+            "policy_number",
+            "coverage_limit",
+            "coverage_currency",
+            "policy_effective_date",
+            "policy_expiration_date",
+            "billing_currency",
+            "credit_limit",
+            "payment_terms_days",
+        ]
+
+    def validate_policy_number(self, value: str) -> str:
+        if value in (None, ""):
+            return value or ""
+        # Accept common policy patterns; disallow whitespace-only and special symbols.
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9\-_]{0,63}$", value):
+            raise serializers.ValidationError(
+                "Invalid policy_number format. Use letters/digits and optional '-' or '_' only."
+            )
+        return value
+
+    def validate_coverage_limit(self, value):
+        if value is None:
+            return value
+        if Decimal(value) < 0:
+            raise serializers.ValidationError("coverage_limit must be non-negative.")
+        return value
+
+    def validate_credit_limit(self, value):
+        if value is None:
+            return value
+        if Decimal(value) < 0:
+            raise serializers.ValidationError("credit_limit must be non-negative.")
+        return value
+
+    def validate_payment_terms_days(self, value):
+        if value is None:
+            return value
+        if value > 3650:  # 10 years is more than enough for payment terms
+            raise serializers.ValidationError("payment_terms_days is unreasonably large.")
+        return value
+
+    def validate(self, attrs):
+        effective = attrs.get("policy_effective_date") or getattr(
+            getattr(self.instance, "policy_effective_date", None), "date", lambda: None
+        )()
+        expiration = attrs.get("policy_expiration_date") or getattr(
+            getattr(self.instance, "policy_expiration_date", None), "date", lambda: None
+        )()
+
+        # Since DateField values are python date objects already, we can compare directly.
+        if (
+            attrs.get("policy_effective_date") is not None
+            and attrs.get("policy_expiration_date") is not None
+        ):
+            effective = attrs.get("policy_effective_date")
+            expiration = attrs.get("policy_expiration_date")
+        else:
+            effective = getattr(self.instance, "policy_effective_date", None) if self.instance else attrs.get("policy_effective_date")
+            expiration = getattr(self.instance, "policy_expiration_date", None) if self.instance else attrs.get("policy_expiration_date")
+
+        if effective and expiration and expiration < effective:
+            raise serializers.ValidationError(
+                {"policy_expiration_date": "Expiration date cannot be earlier than effective date."}
+            )
+        return attrs
