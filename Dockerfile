@@ -17,9 +17,9 @@ RUN apt-get install -y \
   libjpeg62-dev \
   zlib1g-dev \
   libwebp-dev \
-  curl  \
-  vim \
-  net-tools
+  curl \
+  net-tools \
+  postgresql-client
 
 # setup user
 RUN useradd -ms /bin/bash ubuntu
@@ -35,7 +35,16 @@ RUN /home/ubuntu/"$APP_NAME"/venv/bin/pip install -U pip
 RUN /home/ubuntu/"$APP_NAME"/venv/bin/pip install -r requirements.txt
 RUN /home/ubuntu/"$APP_NAME"/venv/bin/pip install gunicorn
 
-# setup path
+# setup path (kept for legacy compatibility)
 ENV PATH="${PATH}:/home/ubuntu/$APP_NAME/$APP_NAME/scripts"
+
+# New repo-local scripts live in backend/scripts. In container we will also mount/copy
+# them under /app/backend/scripts via docker-compose or build context.
+#
+# Default working directory for runtime is repo root, but compose will override as needed.
+WORKDIR /app
+
+# Default entrypoint uses the repo-local backend/scripts/entrypoint.sh; compose can override.
+ENTRYPOINT ["/bin/sh", "/app/backend/scripts/entrypoint.sh"]
 
 USER ubuntu
