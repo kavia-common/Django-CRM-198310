@@ -3,7 +3,8 @@ import re
 
 from django import forms
 
-email_regex = "^[_a-zA-Z0-9-]+(\.[_a-zA-Z0-9-]+)*@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*(\.[a-zA-Z]{2,4})$"
+# Use a raw string to avoid Python invalid-escape SyntaxWarnings on newer versions.
+email_regex = r"^[_a-zA-Z0-9-]+(\.[_a-zA-Z0-9-]+)*@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*(\.[a-zA-Z]{2,4})$"
 
 
 def csv_doc_validate(document):
@@ -93,7 +94,5 @@ class LeadListForm(forms.Form):
                 self.validated_rows = data.get("validated_rows", [])
                 self.invalid_rows = data.get("invalid_rows", [])
                 if len(self.validated_rows) == 0:
-                    raise forms.ValidationError(
-                        "All the leads in the file are invalid."
-                    )
+                    raise forms.ValidationError("All the leads in the file are invalid.")
         return document
