@@ -63,3 +63,4 @@ openapi.json
 CLAUDE.md
 TODO.md
 .playwright-mcp
+.file_activity_report.json
