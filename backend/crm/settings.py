@@ -1,4 +1,5 @@
 import os
+import secrets
 from datetime import timedelta
 
 from corsheaders.defaults import default_headers
@@ -7,10 +8,16 @@ from dotenv import load_dotenv
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Load .env (dev convenience). In production, provide env vars via the runtime.
 load_dotenv()
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ["SECRET_KEY"]
+# Dev default: auto-generate if missing to unblock local migrations/CI.
+SECRET_KEY = os.environ.get("SECRET_KEY")
+if not SECRET_KEY:
+    # Generated at runtime; for dev use only.
+    SECRET_KEY = secrets.token_urlsafe(64)
+    os.environ["SECRET_KEY"] = SECRET_KEY
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
@@ -84,16 +91,27 @@ WSGI_APPLICATION = "crm.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/1.10/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ["DBNAME"],
-        "USER": os.environ["DBUSER"],
-        "PASSWORD": os.environ["DBPASSWORD"],
-        "HOST": os.environ["DBHOST"],
-        "PORT": os.environ["DBPORT"],
+DB_ENGINE = os.environ.get("DB_ENGINE", "").strip().lower()
+
+if DB_ENGINE == "sqlite":
+    SQLITE_NAME = os.environ.get("SQLITE_NAME", "db.sqlite3")
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": os.path.join(BASE_DIR, SQLITE_NAME),
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.environ["DBNAME"],
+            "USER": os.environ["DBUSER"],
+            "PASSWORD": os.environ["DBPASSWORD"],
+            "HOST": os.environ["DBHOST"],
+            "PORT": os.environ["DBPORT"],
+        }
+    }
 
 
 # Password validation
@@ -132,20 +150,20 @@ STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 STATIC_URL = "/static/"
 STATICFILES_DIRS = [os.path.join(BASE_DIR, "static")]
 
-ENV_TYPE = os.environ["ENV_TYPE"]
+ENV_TYPE = os.environ.get("ENV_TYPE", "dev")
 if ENV_TYPE == "dev":
     MEDIA_ROOT = os.path.join(BASE_DIR, "media")
     MEDIA_URL = "/media/"
 elif ENV_TYPE == "prod":
     from .server_settings import *
 
-DEFAULT_FROM_EMAIL = os.environ["DEFAULT_FROM_EMAIL"]
-ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "dev@example.com")
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@example.com")
 
 
 # celery Tasks
-CELERY_BROKER_URL = os.environ["CELERY_BROKER_URL"]
-CELERY_RESULT_BACKEND = os.environ["CELERY_RESULT_BACKEND"]
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
 
 
 LOGGING = {
@@ -307,7 +325,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 # STATICFILES_STORAGE = 'django.contrib.staticfiles.storage.ManifestStaticFilesStorage'
 
-DOMAIN_NAME = os.getenv("DOMAIN_NAME")
+DOMAIN_NAME = os.getenv("DOMAIN_NAME", "localhost")
 
 
 SIMPLE_JWT = {
@@ -331,8 +349,8 @@ SIMPLE_JWT = {
 JWT_ALGO = "HS256"
 
 
-DOMAIN_NAME = os.environ["DOMAIN_NAME"]
-SWAGGER_ROOT_URL = os.environ["SWAGGER_ROOT_URL"]
+DOMAIN_NAME = os.environ.get("DOMAIN_NAME", DOMAIN_NAME)
+SWAGGER_ROOT_URL = os.environ.get("SWAGGER_ROOT_URL", "http://localhost:8000")
 
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
