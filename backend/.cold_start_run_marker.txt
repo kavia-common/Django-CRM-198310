@@ -1,0 +1,1 @@
+Cold start attempt executed in CI-like environment without Docker; see full_cold_start_and_tests_run_report.md for details.
