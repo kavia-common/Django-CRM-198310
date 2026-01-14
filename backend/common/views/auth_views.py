@@ -4,8 +4,7 @@ import secrets
 import requests
 from django.conf import settings
 from django.contrib.auth.hashers import make_password
-from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
+from drf_spectacular.utils import extend_schema, inline_serializer
 
 from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
@@ -15,7 +14,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from common import serializer
-from common.models import Org, Profile, User
+from common.models import Profile, SessionToken, User
 from common.serializer import OrgAwareRefreshToken
 
 
@@ -146,13 +145,14 @@ class GoogleOAuthCallbackView(APIView):
 
 class LoginView(APIView):
     """
-    Login with email and password, returns JWT tokens
+    Login with email and password, returns JWT tokens.
     """
 
     permission_classes = []
     authentication_classes = []
 
     @extend_schema(
+        tags=["auth"],
         description="Login with email and password",
         request=serializer.LoginSerializer,
         responses={
@@ -203,9 +203,7 @@ class LoginView(APIView):
                         user.email, f"No access to org {org_id}", request
                     )
                     return Response(
-                        {
-                            "error": "User does not have access to specified organization"
-                        },
+                        {"error": "User does not have access to specified organization"},
                         status=status.HTTP_403_FORBIDDEN,
                     )
             elif profiles.exists():
@@ -215,12 +213,25 @@ class LoginView(APIView):
 
             # Generate JWT tokens with org context (include profile for role)
             if default_org:
-                token = OrgAwareRefreshToken.for_user_and_org(
-                    user, default_org, profile
-                )
+                token = OrgAwareRefreshToken.for_user_and_org(user, default_org, profile)
             else:
                 # User has no orgs - generate token without org context (but with user info)
                 token = OrgAwareRefreshToken.for_user_and_org(user, None)
+
+            # Best-effort server-side tracking (not required for auth to work)
+            try:
+                SessionToken.objects.create(
+                    user=user,
+                    token_jti=str(token.access_token.get("jti", "")),
+                    refresh_token_jti=str(token.get("jti", "")),
+                    ip_address=request.META.get("REMOTE_ADDR"),
+                    user_agent=request.META.get("HTTP_USER_AGENT", ""),
+                    expires_at=timezone.now()
+                    + settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"],
+                )
+            except Exception:
+                # Never block login due to tracking failures (e.g., missing migration)
+                pass
 
             # Audit log successful login
             audit_log.login_success(user, default_org, request)
@@ -244,6 +255,8 @@ class LoginView(APIView):
             return Response(response_data, status=status.HTTP_200_OK)
 
         # Log failed login
+        from common.audit_log import audit_log
+
         email = request.data.get("email", "unknown")
         audit_log.login_failure(email, str(serializer_obj.errors), request)
         return Response(serializer_obj.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -251,13 +264,14 @@ class LoginView(APIView):
 
 class RegisterView(APIView):
     """
-    Register a new user account
+    Register a new user account.
     """
 
     permission_classes = []
     authentication_classes = []
 
     @extend_schema(
+        tags=["auth"],
         description="Register a new user account",
         request=serializer.RegisterSerializer,
         responses={
@@ -289,13 +303,14 @@ class RegisterView(APIView):
 
 class MeView(APIView):
     """
-    Get current authenticated user details
+    Get current authenticated user details.
     """
 
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
+        tags=["auth"],
         description="Get current authenticated user with organizations",
         responses={200: serializer.UserDetailSerializer},
     )
@@ -320,6 +335,7 @@ class OrgAwareTokenRefreshView(APIView):
     authentication_classes = []
 
     @extend_schema(
+        tags=["auth"],
         description="Refresh access token with org membership validation",
         request=inline_serializer(
             name="OrgAwareTokenRefreshRequest",
@@ -367,9 +383,7 @@ class OrgAwareTokenRefreshView(APIView):
             # If token has org context, validate membership
             if org_id:
                 try:
-                    profile = Profile.objects.get(
-                        user=user, org_id=org_id, is_active=True
-                    )
+                    profile = Profile.objects.get(user=user, org_id=org_id, is_active=True)
                     org = profile.org
                 except Profile.DoesNotExist:
                     # Membership revoked - user must login again
@@ -377,9 +391,7 @@ class OrgAwareTokenRefreshView(APIView):
                         user, None, f"Membership revoked for org {org_id}", request
                     )
                     return Response(
-                        {
-                            "error": "Organization membership revoked. Please login again."
-                        },
+                        {"error": "Organization membership revoked. Please login again."},
                         status=status.HTTP_403_FORBIDDEN,
                     )
 
@@ -402,9 +414,76 @@ class OrgAwareTokenRefreshView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
         except User.DoesNotExist:
-            return Response(
-                {"error": "User not found"}, status=status.HTTP_401_UNAUTHORIZED
+            return Response({"error": "User not found"}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+class LogoutView(APIView):
+    """
+    PUBLIC_INTERFACE
+    Logout endpoint for JWT auth.
+
+    This implements server-side revocation by blacklisting the provided refresh token.
+    Clients should:
+      - discard access token immediately
+      - call this endpoint with the refresh token to revoke it server-side
+
+    Request body:
+      { "refresh": "<refresh_token>" }
+
+    Returns:
+      200 on successful blacklist, 400/401 on invalid input.
+    """
+
+    permission_classes = []
+    authentication_classes = []
+
+    @extend_schema(
+        tags=["auth"],
+        description="Logout by blacklisting the refresh token (server-side revocation).",
+        request=inline_serializer(
+            name="LogoutRequest",
+            fields={"refresh": serializers.CharField(help_text="Refresh token to revoke")},
+        ),
+        responses={
+            200: inline_serializer(
+                name="LogoutResponse",
+                fields={"detail": serializers.CharField()},
             )
+        },
+    )
+    def post(self, request):
+        from django.utils import timezone
+        from rest_framework_simplejwt.exceptions import TokenError
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+
+        refresh = request.data.get("refresh")
+        if not refresh:
+            return Response({"error": "Refresh token is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            token = RefreshToken(refresh)
+            # Blacklist via SimpleJWT built-in mechanism
+            token.blacklist()
+
+            # Best-effort: deactivate tracked session token if present
+            try:
+                refresh_jti = token.get("jti")
+                if refresh_jti:
+                    SessionToken.objects.filter(refresh_token_jti=refresh_jti, is_active=True).update(
+                        is_active=False,
+                        revoked_at=timezone.now(),
+                    )
+            except Exception:
+                # Do not fail logout if tracking isn't available/migrated
+                pass
+
+            return Response({"detail": "Logged out"}, status=status.HTTP_200_OK)
+
+        except (TokenError, AttributeError):
+            return Response({"error": "Invalid or expired token"}, status=status.HTTP_401_UNAUTHORIZED)
+        except (OutstandingToken.DoesNotExist, BlacklistedToken.DoesNotExist):
+            # If token rotation/blacklist tables aren't fully populated, treat as invalid
+            return Response({"error": "Invalid token"}, status=status.HTTP_401_UNAUTHORIZED)
 
 
 class OrgSwitchView(APIView):
@@ -419,12 +498,11 @@ class OrgSwitchView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
+        tags=["auth"],
         description="Switch to a different organization and get new JWT tokens",
         request=inline_serializer(
             name="OrgSwitchRequest",
-            fields={
-                "org_id": serializers.UUIDField(help_text="Target organization ID")
-            },
+            fields={"org_id": serializers.UUIDField(help_text="Target organization ID")},
         ),
         responses={
             200: inline_serializer(
@@ -444,31 +522,23 @@ class OrgSwitchView(APIView):
         org_id = request.data.get("org_id")
 
         if not org_id:
-            return Response(
-                {"error": "org_id is required"}, status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "org_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Get current org for audit logging
         from_org = getattr(request, "org", None)
 
         # Validate user has access to the target org
         try:
-            profile = Profile.objects.get(
-                user=request.user, org_id=org_id, is_active=True
-            )
+            profile = Profile.objects.get(user=request.user, org_id=org_id, is_active=True)
         except Profile.DoesNotExist:
-            audit_log.permission_denied(
-                request.user, from_org, "ORG_SWITCH", f"org:{org_id}", request
-            )
+            audit_log.permission_denied(request.user, from_org, "ORG_SWITCH", f"org:{org_id}", request)
             return Response(
                 {"error": "User does not have access to this organization"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
         # Generate new tokens with the target org (include profile for role)
-        token = OrgAwareRefreshToken.for_user_and_org(
-            request.user, profile.org, profile
-        )
+        token = OrgAwareRefreshToken.for_user_and_org(request.user, profile.org, profile)
 
         # Audit log the org switch
         audit_log.org_switch(request.user, from_org, profile.org, request)

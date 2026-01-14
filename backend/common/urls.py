@@ -4,6 +4,7 @@ from rest_framework_simplejwt import views as jwt_views
 from common.views.auth_views import (
     GoogleOAuthCallbackView,
     LoginView,
+    LogoutView,
     MeView,
     OrgAwareTokenRefreshView,
     OrgSwitchView,
@@ -41,6 +42,14 @@ urlpatterns = [
         OrgAwareTokenRefreshView.as_view(),
         name="token_refresh",
     ),
+    # Backward-compatible alias (some clients may expect /auth/refresh/)
+    path(
+        "auth/refresh/",
+        OrgAwareTokenRefreshView.as_view(),
+        name="token_refresh_alias",
+    ),
+    # Logout: blacklist refresh token (server-side revocation)
+    path("auth/logout/", LogoutView.as_view(), name="logout"),
     path("auth/me/", MeView.as_view(), name="me"),
     path("auth/profile/", ProfileDetailView.as_view(), name="profile_detail"),
     path("auth/switch-org/", OrgSwitchView.as_view(), name="switch_org"),

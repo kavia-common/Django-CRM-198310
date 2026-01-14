@@ -39,6 +39,8 @@ class GetProfileAndOrg(object):
             "/api/auth/google/",
             "/api/auth/register/",
             "/api/auth/refresh-token/",
+            "/api/auth/refresh/",
+            "/api/auth/logout/",
             "/api/auth/me/",
             "/api/auth/switch-org/",
         ]

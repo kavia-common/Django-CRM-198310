@@ -27,6 +27,8 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "rest_framework_simplejwt",
+    # Enables refresh token blacklisting (used for logout + rotation invalidation)
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "django_ses",
     "drf_spectacular",
@@ -309,13 +311,27 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 DOMAIN_NAME = os.getenv("DOMAIN_NAME")
 
 
+# JWT configuration
+# ENV REQUIRED/OPTIONAL:
+# - JWT_ACCESS_TOKEN_MINUTES (optional, default=60)
+# - JWT_REFRESH_TOKEN_DAYS (optional, default=14)
+# - JWT_ROTATE_REFRESH_TOKENS (optional, default=true)
+# - JWT_BLACKLIST_AFTER_ROTATION (optional, default=true)
+JWT_ACCESS_TOKEN_MINUTES = int(os.environ.get("JWT_ACCESS_TOKEN_MINUTES", "60"))
+JWT_REFRESH_TOKEN_DAYS = int(os.environ.get("JWT_REFRESH_TOKEN_DAYS", "14"))
+JWT_ROTATE_REFRESH_TOKENS = (
+    os.environ.get("JWT_ROTATE_REFRESH_TOKENS", "true").lower() == "true"
+)
+JWT_BLACKLIST_AFTER_ROTATION = (
+    os.environ.get("JWT_BLACKLIST_AFTER_ROTATION", "true").lower() == "true"
+)
+
 SIMPLE_JWT = {
-    # Security: Reduced token lifetimes
-    "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=14),
-    # Security: Enable token rotation to invalidate old refresh tokens
-    "ROTATE_REFRESH_TOKENS": True,
-    "BLACKLIST_AFTER_ROTATION": True,
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=JWT_ACCESS_TOKEN_MINUTES),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=JWT_REFRESH_TOKEN_DAYS),
+    # Rotation + blacklist gives strong refresh-token security (old refresh tokens become unusable)
+    "ROTATE_REFRESH_TOKENS": JWT_ROTATE_REFRESH_TOKENS,
+    "BLACKLIST_AFTER_ROTATION": JWT_BLACKLIST_AFTER_ROTATION,
     "UPDATE_LAST_LOGIN": False,
     "ALGORITHM": "HS256",
     "SIGNING_KEY": SECRET_KEY,
